@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+
 
 use windows::core::{PCWSTR, HSTRING};
 use windows::Win32::Foundation::{
@@ -291,24 +291,12 @@ fn build_response(
             resp
         }
         Request::Input { from: _, payload } => {
-            let before = provider.read_buffer();
-            let before_tail = slice_last_lines(&before, 5).to_string();
             provider.send_input(&payload, false);
-            thread::sleep(Duration::from_millis(100));
-            let after = provider.read_buffer();
-            let after_tail = slice_last_lines(&after, 5);
-            let changed = before_tail != after_tail;
-            format!("ACK|{}|{}|buffer_changed={}\n", session_name, pid, changed)
+            format!("ACK|{}|{}\n", session_name, pid)
         }
         Request::RawInput { from: _, payload } => {
-            let before = provider.read_buffer();
-            let before_tail = slice_last_lines(&before, 5).to_string();
             provider.send_input(&payload, true);
-            thread::sleep(Duration::from_millis(100));
-            let after = provider.read_buffer();
-            let after_tail = slice_last_lines(&after, 5);
-            let changed = before_tail != after_tail;
-            format!("ACK|{}|{}|buffer_changed={}\n", session_name, pid, changed)
+            format!("ACK|{}|{}\n", session_name, pid)
         }
         Request::NewTab => {
             provider.new_tab();
