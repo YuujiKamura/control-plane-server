@@ -58,7 +58,7 @@ impl StatusEngine {
         let agent_ready = if let Some(ref atype) = agent_type {
             match atype.as_str() {
                 "gemini" => current_buffer.contains("Type your message"),
-                "codex" => current_buffer.contains("OpenAI Codex"),
+                "codex" => current_buffer.contains("left \u{00b7} ~") || current_buffer.contains("\u{203a} "),
                 "claude" => current_buffer.contains("$ ") || current_buffer.contains("> "),
                 _ => false,
             }
@@ -66,7 +66,7 @@ impl StatusEngine {
             false
         };
 
-        let status = if current_buffer.contains("Allow once") || current_buffer.contains("Action Required") {
+        let status = if current_buffer.contains("Allow once") || current_buffer.contains("Action Required") || current_buffer.contains("Would you like to run") {
             AgentStatus::Approval
         } else if buffer_changed {
             AgentStatus::Working
