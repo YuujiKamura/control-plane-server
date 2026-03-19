@@ -31,7 +31,7 @@ unsafe impl Sync for FfiBridge {}
 
 impl TerminalProvider for FfiBridge {
     fn read_buffer(&self) -> String {
-        let mut buf = vec![0u8; 65536];
+        let mut buf = vec![0u8; 262144]; // 256KB — large agent output can exceed 64KB
         let n = (self.vtable.read_buffer)(self.vtable.ctx, buf.as_mut_ptr() as *mut c_char, buf.len());
         let n = n.min(buf.len());
         String::from_utf8_lossy(&buf[..n]).to_string()
