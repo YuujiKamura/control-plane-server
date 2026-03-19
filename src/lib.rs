@@ -74,7 +74,7 @@ mod tests {
         use std::io::{Read, Write};
         
         let provider = Arc::new(MockProvider { buffer: "hello".to_string() });
-        let server = ControlPlaneServer::new(provider, "test-pipe-session".to_string()).unwrap();
+        let server = ControlPlaneServer::new(provider, "test-pipe-session".to_string(), None).unwrap();
         
         // Start server
         server.start().unwrap();
