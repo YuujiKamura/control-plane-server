@@ -18,6 +18,7 @@ pub struct TerminalProviderVTable {
     pub tab_title: extern "C" fn(ctx: *mut c_void, index: usize, buf: *mut c_char, buf_len: usize) -> usize,
     pub tab_working_dir: extern "C" fn(ctx: *mut c_void, index: usize, buf: *mut c_char, buf_len: usize) -> usize,
     pub tab_has_selection: extern "C" fn(ctx: *mut c_void, index: usize) -> bool,
+    pub read_buffer_for_tab: extern "C" fn(ctx: *mut c_void, tab_index: usize, buf: *mut u8, buf_len: usize) -> usize,
     pub ctx: *mut c_void,
 }
 
@@ -34,7 +35,11 @@ impl TerminalProvider for FfiBridge {
         let mut buf = vec![0u8; 262144]; // 256KB — large agent output can exceed 64KB
         let n = (self.vtable.read_buffer)(self.vtable.ctx, buf.as_mut_ptr() as *mut c_char, buf.len());
         let n = n.min(buf.len());
-        String::from_utf8_lossy(&buf[..n]).to_string()
+        // Windows APIs return UTF-16LE; reinterpret as u16 slice and decode
+        let u16_slice = unsafe {
+            std::slice::from_raw_parts(buf.as_ptr() as *const u16, n / 2)
+        };
+        String::from_utf16_lossy(u16_slice)
     }
 
     fn send_input(&self, text: &[u8], raw: bool) {
@@ -90,6 +95,20 @@ impl TerminalProvider for FfiBridge {
 
     fn hwnd(&self) -> usize {
         (self.vtable.hwnd)(self.vtable.ctx)
+    }
+
+    fn read_buffer_for_tab(&self, index: usize) -> Option<String> {
+        let mut buf = vec![0u8; 262144]; // 256KB
+        let n = (self.vtable.read_buffer_for_tab)(self.vtable.ctx, index, buf.as_mut_ptr(), buf.len());
+        if n == 0 {
+            return None;
+        }
+        let n = n.min(buf.len());
+        // Windows APIs return UTF-16LE; reinterpret as u16 slice and decode
+        let u16_slice = unsafe {
+            std::slice::from_raw_parts(buf.as_ptr() as *const u16, n / 2)
+        };
+        Some(String::from_utf16_lossy(u16_slice))
     }
 }
 
