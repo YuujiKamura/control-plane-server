@@ -37,6 +37,19 @@ pub trait TerminalProvider: Send + Sync {
     fn focus(&self);
     /// Get the HWND of the terminal window (0 if unavailable).
     fn hwnd(&self) -> usize;
+    /// Read buffer for a specific tab (None = not supported or invalid index).
+    fn read_buffer_for_tab(&self, _index: usize) -> Option<String> { None }
+    /// Send input to a specific tab. Default: switch tab, send, switch back.
+    fn send_input_to_tab(&self, text: &[u8], raw: bool, tab_index: usize) {
+        let original = self.active_tab();
+        if tab_index != original {
+            self.switch_tab(tab_index);
+        }
+        self.send_input(text, raw);
+        if tab_index != original {
+            self.switch_tab(original);
+        }
+    }
 }
 
 #[cfg(test)]

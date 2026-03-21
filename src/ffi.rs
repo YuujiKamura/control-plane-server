@@ -19,6 +19,7 @@ pub struct TerminalProviderVTable {
     pub tab_working_dir: extern "C" fn(ctx: *mut c_void, index: usize, buf: *mut c_char, buf_len: usize) -> usize,
     pub tab_has_selection: extern "C" fn(ctx: *mut c_void, index: usize) -> bool,
     pub read_buffer_for_tab: extern "C" fn(ctx: *mut c_void, tab_index: usize, buf: *mut u8, buf_len: usize) -> usize,
+    pub send_input_to_tab: extern "C" fn(ctx: *mut c_void, text: *const u8, len: usize, raw: bool, tab_index: usize),
     pub ctx: *mut c_void,
 }
 
@@ -109,6 +110,10 @@ impl TerminalProvider for FfiBridge {
             std::slice::from_raw_parts(buf.as_ptr() as *const u16, n / 2)
         };
         Some(String::from_utf16_lossy(u16_slice))
+    }
+
+    fn send_input_to_tab(&self, text: &[u8], raw: bool, tab_index: usize) {
+        (self.vtable.send_input_to_tab)(self.vtable.ctx, text.as_ptr(), text.len(), raw, tab_index);
     }
 }
 

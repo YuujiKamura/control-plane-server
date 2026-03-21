@@ -4,10 +4,10 @@ use crate::error::Result;
 pub enum Request {
     Ping,
     State(Option<usize>),
-    Tail(usize),
+    Tail { lines: usize, tab_index: Option<usize> },
     ListTabs,
-    Input { from: String, payload: Vec<u8> },
-    RawInput { from: String, payload: Vec<u8> },
+    Input { from: String, payload: Vec<u8>, tab_index: Option<usize> },
+    RawInput { from: String, payload: Vec<u8>, tab_index: Option<usize> },
     NewTab,
     CloseTab(Option<usize>),
     SwitchTab(usize),
@@ -40,24 +40,31 @@ impl Request {
                 } else {
                     20
                 };
-                Ok(Request::Tail(lines))
+                let tab_index = if parts.len() > 2 {
+                    parts[2].parse().ok()
+                } else {
+                    None
+                };
+                Ok(Request::Tail { lines, tab_index })
             }
             "LIST_TABS" => Ok(Request::ListTabs),
             "INPUT" => {
                 if parts.len() < 3 {
-                    return Err(crate::error::Error::InvalidArgument("INPUT|from|payload".to_string()));
+                    return Err(crate::error::Error::InvalidArgument("INPUT|from|payload[|tab]".to_string()));
                 }
                 let from = parts[1].to_string();
                 let payload = STANDARD.decode(parts[2]).map_err(|_| crate::error::Error::InvalidBase64)?;
-                Ok(Request::Input { from, payload })
+                let tab_index = if parts.len() > 3 { parts[3].parse().ok() } else { None };
+                Ok(Request::Input { from, payload, tab_index })
             }
             "RAW_INPUT" => {
                 if parts.len() < 3 {
-                    return Err(crate::error::Error::InvalidArgument("RAW_INPUT|from|payload".to_string()));
+                    return Err(crate::error::Error::InvalidArgument("RAW_INPUT|from|payload[|tab]".to_string()));
                 }
                 let from = parts[1].to_string();
                 let payload = STANDARD.decode(parts[2]).map_err(|_| crate::error::Error::InvalidBase64)?;
-                Ok(Request::RawInput { from, payload })
+                let tab_index = if parts.len() > 3 { parts[3].parse().ok() } else { None };
+                Ok(Request::RawInput { from, payload, tab_index })
             }
             "NEW_TAB" => Ok(Request::NewTab),
             "CLOSE_TAB" => {

@@ -261,8 +261,15 @@ fn build_response(
                 format!("ERR|{}|invalid-tab\n", session_name)
             }
         }
-        Request::Tail(lines) => {
-            let full_buffer = provider.read_buffer();
+        Request::Tail { lines, tab_index } => {
+            let full_buffer = if let Some(idx) = tab_index {
+                match provider.read_buffer_for_tab(idx) {
+                    Some(buf) => buf,
+                    None => return format!("ERR|{}|invalid-tab\n", session_name),
+                }
+            } else {
+                provider.read_buffer()
+            };
             let sliced = slice_last_lines(&full_buffer, lines);
             if sliced.ends_with('\n') {
                 format!("TAIL|{}|{}\n{}", session_name, lines, sliced)
@@ -290,12 +297,18 @@ fn build_response(
             }
             resp
         }
-        Request::Input { from: _, payload } => {
-            provider.send_input(&payload, false);
+        Request::Input { from: _, payload, tab_index } => {
+            match tab_index {
+                Some(idx) => provider.send_input_to_tab(&payload, false, idx),
+                None => provider.send_input(&payload, false),
+            }
             format!("ACK|{}|{}\n", session_name, pid)
         }
-        Request::RawInput { from: _, payload } => {
-            provider.send_input(&payload, true);
+        Request::RawInput { from: _, payload, tab_index } => {
+            match tab_index {
+                Some(idx) => provider.send_input_to_tab(&payload, true, idx),
+                None => provider.send_input(&payload, true),
+            }
             format!("ACK|{}|{}\n", session_name, pid)
         }
         Request::NewTab => {
