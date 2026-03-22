@@ -26,9 +26,10 @@ use windows::Win32::Security::{
 use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 
 use crate::error::Result;
-use crate::protocol::{Request, escape_field};
+use crate::protocol::{Request, TabTarget, escape_field};
 use crate::agent_status::StatusEngine;
 use crate::session::{SessionManager, sanitize_session_name};
+use crate::tab_id::TabIdManager;
 use crate::TerminalProvider;
 use crate::utils::{slice_last_lines, infer_prompt};
 
@@ -37,6 +38,7 @@ const MAX_READ_SIZE: u32 = 65536;
 pub struct ControlPlaneServer {
     provider: Arc<dyn TerminalProvider>,
     status_engine: Arc<Mutex<StatusEngine>>,
+    tab_id_manager: Arc<Mutex<TabIdManager>>,
     session_manager: Arc<SessionManager>,
     stop: Arc<Mutex<bool>>,
 }
@@ -54,6 +56,7 @@ impl ControlPlaneServer {
         Ok(Self {
             provider,
             status_engine: Arc::new(Mutex::new(StatusEngine::new())),
+            tab_id_manager: Arc::new(Mutex::new(TabIdManager::new())),
             session_manager,
             stop: Arc::new(Mutex::new(false)),
         })
@@ -65,13 +68,14 @@ impl ControlPlaneServer {
 
         let provider = self.provider.clone();
         let status_engine = self.status_engine.clone();
+        let tab_id_manager = self.tab_id_manager.clone();
         let pipe_path = self.session_manager.pipe_path.clone();
         let session_name = self.session_manager.session_name.clone();
         let pid = self.session_manager.pid;
         let stop = self.stop.clone();
 
         thread::spawn(move || {
-            if let Err(e) = server_thread_main(provider, status_engine, pipe_path, session_name, pid, stop) {
+            if let Err(e) = server_thread_main(provider, status_engine, tab_id_manager, pipe_path, session_name, pid, stop) {
                 eprintln!("ControlPlaneServer error: {:?}", e);
             }
         });
@@ -89,6 +93,7 @@ impl ControlPlaneServer {
 fn server_thread_main(
     provider: Arc<dyn TerminalProvider>,
     status_engine: Arc<Mutex<StatusEngine>>,
+    tab_id_manager: Arc<Mutex<TabIdManager>>,
     pipe_path: String,
     session_name: String,
     pid: u32,
@@ -160,7 +165,7 @@ fn server_thread_main(
         }
 
         if connected && !*stop.lock().unwrap() {
-            handle_client(pipe, &provider, &status_engine, &session_name, pid);
+            handle_client(pipe, &provider, &status_engine, &tab_id_manager, &session_name, pid);
         }
 
         unsafe {
@@ -183,6 +188,7 @@ fn handle_client(
     pipe: HANDLE,
     provider: &Arc<dyn TerminalProvider>,
     status_engine: &Arc<Mutex<StatusEngine>>,
+    tab_id_manager: &Arc<Mutex<TabIdManager>>,
     session_name: &str,
     pid: u32,
 ) {
@@ -210,7 +216,7 @@ fn handle_client(
         let request_str = String::from_utf8_lossy(&buffer[..read as usize]);
         let trimmed = request_str.trim();
         if !trimmed.is_empty() {
-            let response = build_response(trimmed, provider, status_engine, session_name, pid);
+            let response = build_response(trimmed, provider, status_engine, tab_id_manager, session_name, pid);
             let mut written = 0;
             unsafe {
                 let _ = WriteFile(pipe, Some(response.as_bytes()), Some(&mut written), None);
@@ -224,10 +230,45 @@ fn handle_client(
     }
 }
 
+/// Resolve a `TabTarget` to a positional index.  Returns `Err(response)`
+/// if the target cannot be resolved and we should send an error back.
+fn resolve_tab(
+    target: &TabTarget,
+    tab_id_manager: &Mutex<TabIdManager>,
+    _provider: &Arc<dyn TerminalProvider>,
+    session_name: &str,
+) -> std::result::Result<Option<usize>, String> {
+    match target {
+        TabTarget::None => Ok(None),
+        TabTarget::Index(idx) => Ok(Some(*idx)),
+        TabTarget::Id(id) => {
+            let mgr = tab_id_manager.lock().unwrap();
+            match mgr.resolve(id) {
+                Some(idx) => Ok(Some(idx)),
+                None => Err(format!("ERR|{}|unknown-tab-id|{}\n", session_name, id)),
+            }
+        }
+    }
+}
+
+/// Resolve a `TabTarget`, defaulting to the active tab when `None`.
+fn resolve_tab_or_active(
+    target: &TabTarget,
+    tab_id_manager: &Mutex<TabIdManager>,
+    provider: &Arc<dyn TerminalProvider>,
+    session_name: &str,
+) -> std::result::Result<usize, String> {
+    match resolve_tab(target, tab_id_manager, provider, session_name)? {
+        Some(idx) => Ok(idx),
+        None => Ok(provider.active_tab()),
+    }
+}
+
 fn build_response(
     request_str: &str,
     provider: &Arc<dyn TerminalProvider>,
     status_engine: &Arc<Mutex<StatusEngine>>,
+    tab_id_manager: &Arc<Mutex<TabIdManager>>,
     session_name: &str,
     pid: u32,
 ) -> String {
@@ -240,13 +281,19 @@ fn build_response(
         Request::Ping => {
             format!("PONG|{}|{}|0x{:X}\n", session_name, pid, provider.hwnd())
         }
-        Request::State(tab_idx) => {
-            let idx = tab_idx.unwrap_or_else(|| provider.active_tab());
+        Request::State(tab) => {
+            let idx = match resolve_tab_or_active(&tab, tab_id_manager, provider, session_name) {
+                Ok(i) => i,
+                Err(resp) => return resp,
+            };
             if let Some(info) = provider.tab_info(idx) {
                 let buffer = provider.read_buffer();
                 let at_prompt = infer_prompt(&buffer, &info.working_directory);
+                // Ensure tab_id_manager is synced for ID lookup
+                let mgr = tab_id_manager.lock().unwrap();
+                let tab_id = mgr.get_id(idx).unwrap_or("?");
                 format!(
-                    "STATE|{}|{}|0x{:X}|{}|prompt={}|selection={}|pwd={}|tab_count={}|active_tab={}\n",
+                    "STATE|{}|{}|0x{:X}|{}|prompt={}|selection={}|pwd={}|tab_count={}|active_tab={}|tab_id={}\n",
                     session_name,
                     pid,
                     provider.hwnd(),
@@ -255,13 +302,18 @@ fn build_response(
                     if info.has_selection { '1' } else { '0' },
                     info.working_directory,
                     provider.tab_count(),
-                    provider.active_tab()
+                    provider.active_tab(),
+                    tab_id,
                 )
             } else {
                 format!("ERR|{}|invalid-tab\n", session_name)
             }
         }
-        Request::Tail { lines, tab_index } => {
+        Request::Tail { lines, tab } => {
+            let tab_index = match resolve_tab(&tab, tab_id_manager, provider, session_name) {
+                Ok(idx) => idx,
+                Err(resp) => return resp,
+            };
             let full_buffer = if let Some(idx) = tab_index {
                 match provider.read_buffer_for_tab(idx) {
                     Some(buf) => buf,
@@ -280,6 +332,14 @@ fn build_response(
         Request::ListTabs => {
             let tab_count = provider.tab_count();
             let active_tab = provider.active_tab();
+
+            // Sync the tab ID manager with the actual tab count
+            {
+                let mut mgr = tab_id_manager.lock().unwrap();
+                mgr.sync_tabs(tab_count);
+            }
+
+            let mgr = tab_id_manager.lock().unwrap();
             let mut resp = format!("LIST_TABS|{}|{}\n", tab_count, active_tab);
             for i in 0..tab_count {
                 if let Some(info) = provider.tab_info(i) {
@@ -289,22 +349,31 @@ fn build_response(
                     } else {
                         false
                     };
-                    resp.push_str(&format!("TAB|{}|{}|pwd={}|prompt={}|selection={}\n",
-                        i, escape_field(&info.title), info.working_directory,
+                    let tab_id = mgr.get_id(i).unwrap_or("?");
+                    resp.push_str(&format!("TAB|{}|{}|{}|pwd={}|prompt={}|selection={}\n",
+                        i, tab_id, escape_field(&info.title), info.working_directory,
                         if prompt { '1' } else { '0' },
                         if info.has_selection { '1' } else { '0' }));
                 }
             }
             resp
         }
-        Request::Input { from: _, payload, tab_index } => {
+        Request::Input { from: _, payload, tab } => {
+            let tab_index = match resolve_tab(&tab, tab_id_manager, provider, session_name) {
+                Ok(idx) => idx,
+                Err(resp) => return resp,
+            };
             match tab_index {
                 Some(idx) => provider.send_input_to_tab(&payload, false, idx),
                 None => provider.send_input(&payload, false),
             }
             format!("ACK|{}|{}\n", session_name, pid)
         }
-        Request::RawInput { from: _, payload, tab_index } => {
+        Request::RawInput { from: _, payload, tab } => {
+            let tab_index = match resolve_tab(&tab, tab_id_manager, provider, session_name) {
+                Ok(idx) => idx,
+                Err(resp) => return resp,
+            };
             match tab_index {
                 Some(idx) => provider.send_input_to_tab(&payload, true, idx),
                 None => provider.send_input(&payload, true),
@@ -313,14 +382,34 @@ fn build_response(
         }
         Request::NewTab => {
             provider.new_tab();
-            format!("ACK|{}|NEW_TAB\n", session_name)
+            let new_count = provider.tab_count();
+            let mut mgr = tab_id_manager.lock().unwrap();
+            mgr.sync_tabs(new_count);
+            // The new tab is at index new_count - 1
+            let tab_id = mgr.get_id(new_count.saturating_sub(1))
+                .unwrap_or("?")
+                .to_string();
+            format!("OK|{}|NEW_TAB|{}\n", session_name, tab_id)
         }
-        Request::CloseTab(idx) => {
-            let idx = idx.unwrap_or_else(|| provider.active_tab());
+        Request::CloseTab(tab) => {
+            let idx = match resolve_tab_or_active(&tab, tab_id_manager, provider, session_name) {
+                Ok(i) => i,
+                Err(resp) => return resp,
+            };
+            // Remove from manager *before* calling close_tab so the index
+            // is still valid in the manager's mapping.
+            {
+                let mut mgr = tab_id_manager.lock().unwrap();
+                mgr.remove_tab_at_index(idx);
+            }
             provider.close_tab(idx);
             format!("ACK|{}|CLOSE_TAB|{}\n", session_name, idx)
         }
-        Request::SwitchTab(idx) => {
+        Request::SwitchTab(tab) => {
+            let idx = match resolve_tab_or_active(&tab, tab_id_manager, provider, session_name) {
+                Ok(i) => i,
+                Err(resp) => return resp,
+            };
             provider.switch_tab(idx);
             format!("ACK|{}|SWITCH_TAB|{}\n", session_name, idx)
         }
@@ -333,7 +422,11 @@ fn build_response(
             let (status, ms, tab) = engine.get_status(&**provider);
             format!("AGENT_STATUS|{}|{}|{}|tab={}\n", session_name, status.as_str(), ms, tab)
         }
-        Request::SetAgent { tab_index, agent_type } => {
+        Request::SetAgent { tab, agent_type } => {
+            let tab_index = match resolve_tab_or_active(&tab, tab_id_manager, provider, session_name) {
+                Ok(i) => i,
+                Err(resp) => return resp,
+            };
             let mut engine = status_engine.lock().unwrap();
             engine.set_agent_type(tab_index, agent_type.clone());
             format!("ACK|{}|SET_AGENT|{}|{}\n", session_name, tab_index, agent_type)

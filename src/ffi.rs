@@ -36,11 +36,8 @@ impl TerminalProvider for FfiBridge {
         let mut buf = vec![0u8; 262144]; // 256KB — large agent output can exceed 64KB
         let n = (self.vtable.read_buffer)(self.vtable.ctx, buf.as_mut_ptr() as *mut c_char, buf.len());
         let n = n.min(buf.len());
-        // Windows APIs return UTF-16LE; reinterpret as u16 slice and decode
-        let u16_slice = unsafe {
-            std::slice::from_raw_parts(buf.as_ptr() as *const u16, n / 2)
-        };
-        String::from_utf16_lossy(u16_slice)
+        // Zig terminal buffer returns UTF-8
+        String::from_utf8_lossy(&buf[..n]).to_string()
     }
 
     fn send_input(&self, text: &[u8], raw: bool) {
@@ -105,11 +102,8 @@ impl TerminalProvider for FfiBridge {
             return None;
         }
         let n = n.min(buf.len());
-        // Windows APIs return UTF-16LE; reinterpret as u16 slice and decode
-        let u16_slice = unsafe {
-            std::slice::from_raw_parts(buf.as_ptr() as *const u16, n / 2)
-        };
-        Some(String::from_utf16_lossy(u16_slice))
+        // Zig terminal buffer returns UTF-8
+        Some(String::from_utf8_lossy(&buf[..n]).to_string())
     }
 
     fn send_input_to_tab(&self, text: &[u8], raw: bool, tab_index: usize) {

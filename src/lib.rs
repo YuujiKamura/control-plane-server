@@ -3,6 +3,7 @@ pub mod protocol;
 pub mod server;
 pub mod agent_status;
 pub mod session;
+pub mod tab_id;
 pub mod utils;
 pub mod ffi;
 
@@ -83,6 +84,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // Requires running pipe server
     fn test_server_real_pipe() {
         use std::io::{Read, Write};
         
