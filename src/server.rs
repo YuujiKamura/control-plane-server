@@ -51,7 +51,7 @@ impl ControlPlaneServer {
         let pipe_name = format!("{}-{}-{}", prefix, safe_session_name, pid);
         let pipe_path = format!(r"\\.\pipe\{}", pipe_name);
 
-        let session_manager = Arc::new(SessionManager::new(session_name, pipe_path)?);
+        let session_manager = Arc::new(SessionManager::new(session_name, pipe_path, pipe_prefix.as_deref())?);
 
         Ok(Self {
             provider,

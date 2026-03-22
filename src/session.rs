@@ -12,15 +12,20 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub fn new(session_name: String, pipe_path: String) -> Result<Self> {
+    pub fn new(session_name: String, pipe_path: String, app_name: Option<&str>) -> Result<Self> {
         let pid = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
         let safe_session_name = sanitize_session_name(&session_name);
-        
+
         let local_app_data = std::env::var("LOCALAPPDATA")
             .map_err(|_| Error::InvalidArgument("LOCALAPPDATA not set".to_string()))?;
-        
+
+        // Derive directory from app_name: "ghostty-winui3" → "ghostty", default "WindowsTerminal"
+        let dir_name = app_name
+            .map(|n| n.split('-').next().unwrap_or(n).to_string())
+            .unwrap_or_else(|| "WindowsTerminal".to_string());
+
         let mut session_dir = PathBuf::from(local_app_data);
-        session_dir.push("WindowsTerminal");
+        session_dir.push(&dir_name);
         session_dir.push("control-plane");
         session_dir.push("winui3");
         session_dir.push("sessions");
