@@ -27,7 +27,7 @@ use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSe
 
 use crate::error::Result;
 use crate::protocol::{Request, TabTarget, escape_field};
-use crate::agent_status::StatusEngine;
+
 use crate::session::{SessionManager, sanitize_session_name};
 use crate::tab_id::TabIdManager;
 use crate::TerminalProvider;
@@ -37,7 +37,6 @@ const MAX_READ_SIZE: u32 = 65536;
 
 pub struct ControlPlaneServer {
     provider: Arc<dyn TerminalProvider>,
-    status_engine: Arc<Mutex<StatusEngine>>,
     tab_id_manager: Arc<Mutex<TabIdManager>>,
     session_manager: Arc<SessionManager>,
     stop: Arc<Mutex<bool>>,
@@ -55,7 +54,6 @@ impl ControlPlaneServer {
 
         Ok(Self {
             provider,
-            status_engine: Arc::new(Mutex::new(StatusEngine::new())),
             tab_id_manager: Arc::new(Mutex::new(TabIdManager::new())),
             session_manager,
             stop: Arc::new(Mutex::new(false)),
@@ -67,7 +65,6 @@ impl ControlPlaneServer {
         self.session_manager.write_file(hwnd)?;
 
         let provider = self.provider.clone();
-        let status_engine = self.status_engine.clone();
         let tab_id_manager = self.tab_id_manager.clone();
         let pipe_path = self.session_manager.pipe_path.clone();
         let session_name = self.session_manager.session_name.clone();
@@ -75,7 +72,7 @@ impl ControlPlaneServer {
         let stop = self.stop.clone();
 
         thread::spawn(move || {
-            if let Err(e) = server_thread_main(provider, status_engine, tab_id_manager, pipe_path, session_name, pid, stop) {
+            if let Err(e) = server_thread_main(provider, tab_id_manager, pipe_path, session_name, pid, stop) {
                 eprintln!("ControlPlaneServer error: {:?}", e);
             }
         });
@@ -92,7 +89,6 @@ impl ControlPlaneServer {
 
 fn server_thread_main(
     provider: Arc<dyn TerminalProvider>,
-    status_engine: Arc<Mutex<StatusEngine>>,
     tab_id_manager: Arc<Mutex<TabIdManager>>,
     pipe_path: String,
     session_name: String,
@@ -165,7 +161,7 @@ fn server_thread_main(
         }
 
         if connected && !*stop.lock().unwrap() {
-            handle_client(pipe, &provider, &status_engine, &tab_id_manager, &session_name, pid);
+            handle_client(pipe, &provider, &tab_id_manager, &session_name, pid);
         }
 
         unsafe {
@@ -187,7 +183,6 @@ fn server_thread_main(
 fn handle_client(
     pipe: HANDLE,
     provider: &Arc<dyn TerminalProvider>,
-    status_engine: &Arc<Mutex<StatusEngine>>,
     tab_id_manager: &Arc<Mutex<TabIdManager>>,
     session_name: &str,
     pid: u32,
@@ -216,7 +211,7 @@ fn handle_client(
         let request_str = String::from_utf8_lossy(&buffer[..read as usize]);
         let trimmed = request_str.trim();
         if !trimmed.is_empty() {
-            let response = build_response(trimmed, provider, status_engine, tab_id_manager, session_name, pid);
+            let response = build_response(trimmed, provider, tab_id_manager, session_name, pid);
             let mut written = 0;
             unsafe {
                 let _ = WriteFile(pipe, Some(response.as_bytes()), Some(&mut written), None);
@@ -267,7 +262,6 @@ fn resolve_tab_or_active(
 fn build_response(
     request_str: &str,
     provider: &Arc<dyn TerminalProvider>,
-    status_engine: &Arc<Mutex<StatusEngine>>,
     tab_id_manager: &Arc<Mutex<TabIdManager>>,
     session_name: &str,
     pid: u32,
@@ -418,18 +412,10 @@ fn build_response(
             format!("ACK|{}|FOCUS\n", session_name)
         }
         Request::AgentStatus => {
-            let mut engine = status_engine.lock().unwrap();
-            let (status, ms, tab) = engine.get_status(&**provider);
-            format!("AGENT_STATUS|{}|{}|{}|tab={}\n", session_name, status.as_str(), ms, tab)
+            format!("ERR|deprecated|use agent-deck for state detection\n")
         }
-        Request::SetAgent { tab, agent_type } => {
-            let tab_index = match resolve_tab_or_active(&tab, tab_id_manager, provider, session_name) {
-                Ok(i) => i,
-                Err(resp) => return resp,
-            };
-            let mut engine = status_engine.lock().unwrap();
-            engine.set_agent_type(tab_index, agent_type.clone());
-            format!("ACK|{}|SET_AGENT|{}|{}\n", session_name, tab_index, agent_type)
+        Request::SetAgent { tab: _, agent_type: _ } => {
+            format!("ERR|deprecated|use agent-deck for state detection\n")
         }
         Request::Msg(_payload) => {
             format!("ACK|{}|{}\n", session_name, pid)

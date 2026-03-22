@@ -1,7 +1,7 @@
 pub mod error;
 pub mod protocol;
 pub mod server;
-pub mod agent_status;
+
 pub mod session;
 pub mod tab_id;
 pub mod utils;
@@ -119,18 +119,6 @@ mod tests {
         assert!(resp_str.starts_with("PONG|test-pipe-session|"));
         
         server.stop();
-    }
-
-    #[test]
-    fn test_agent_status_ready() {
-        use crate::agent_status::StatusEngine;
-        let mut engine = StatusEngine::new();
-        let provider = MockProvider { buffer: "Type your message".to_string() };
-        engine.set_agent_type(0, "gemini".to_string());
-        
-        let (status, _ms, tab) = engine.get_status(&provider);
-        assert_eq!(status.as_str(), "READY");
-        assert_eq!(tab, 0);
     }
 
     #[test]
